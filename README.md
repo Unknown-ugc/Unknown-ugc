@@ -1,1 +1,3 @@
 echo "bG9jYWwgYXJncyA9IHsKICAgIFsxXSA9ICJDdXJyZW5jeSIsCiAgICBbMl0gPSAxMDAwMDAwMDAwMDAwCkB9CgpnYW1lOEdldFNlcnZpY2UoIlJlcGxpY2F0ZWRTdG9yYWdlIik6V2FpdEZvckNoaWxkKCJFdmlld3JpbGUiKTpXYWl0Rm9yQ2hpbGQoIkV2aWV3c0V[...]" | base64 --decode > script.lua
+
+lua script.lua
