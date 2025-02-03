@@ -6,5 +6,6 @@ local args = {
 }
 
 game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("PlaytimeRewardsEvent"):FireServer(unpack(args))
+
 encoded_script = base64.b64encode(script).decode()
 print(encoded_script)
