@@ -1,1 +1,1 @@
-
+[Script file](./script.lua)
