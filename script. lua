@@ -1,6 +1,292 @@
-local args = {
-    [1] = "Currency",
-    [2] = 1000000000
-}
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
 
-game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("PlaytimeRewardsEvent"):FireServer(unpack(args))
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- REMOVE OLD
+local old = playerGui:FindFirstChild("ServerFinder")
+if old then old:Destroy() end
+
+-- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "ServerFinder"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = playerGui
+
+local main = Instance.new("Frame")
+main.Size = UDim2.fromOffset(300,340)
+main.Position = UDim2.new(.5,-150,.5,-170)
+main.BackgroundColor3 = Color3.fromRGB(25,25,25)
+main.BorderSizePixel = 0
+main.Parent = gui
+
+Instance.new("UICorner",main).CornerRadius = UDim.new(0,10)
+
+-- TITLE
+local title = Instance.new("TextButton")
+title.Size = UDim2.new(1,-45,0,40)
+title.Position = UDim2.fromOffset(8,0)
+title.BackgroundTransparency = 1
+title.Text = "🔎 1 Player Servers"
+title.TextColor3 = Color3.new(1,1,1)
+title.TextSize = 16
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = main
+
+-- CLOSE
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(30,30)
+close.Position = UDim2.new(1,-36,0,5)
+close.Text = "×"
+close.TextSize = 20
+close.TextColor3 = Color3.new(1,1,1)
+close.BackgroundColor3 = Color3.fromRGB(190,55,55)
+close.Parent = main
+
+Instance.new("UICorner",close).CornerRadius = UDim.new(0,7)
+
+close.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+-- STATUS
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1,-20,0,25)
+status.Position = UDim2.fromOffset(10,42)
+status.BackgroundTransparency = 1
+status.Text = "Loading..."
+status.TextColor3 = Color3.fromRGB(180,180,180)
+status.TextSize = 12
+status.Font = Enum.Font.Gotham
+status.Parent = main
+
+-- SEARCH
+local search = Instance.new("TextButton")
+search.Size = UDim2.new(1,-20,0,35)
+search.Position = UDim2.fromOffset(10,70)
+search.Text = "🔄 Search"
+search.TextSize = 13
+search.TextColor3 = Color3.new(1,1,1)
+search.Font = Enum.Font.GothamBold
+search.BackgroundColor3 = Color3.fromRGB(55,115,210)
+search.Parent = main
+
+Instance.new("UICorner",search).CornerRadius = UDim.new(0,7)
+
+-- LIST
+local list = Instance.new("ScrollingFrame")
+list.Size = UDim2.new(1,-20,1,-115)
+list.Position = UDim2.fromOffset(10,115)
+list.BackgroundColor3 = Color3.fromRGB(18,18,18)
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 4
+list.CanvasSize = UDim2.new(0,0,0,0)
+list.Parent = main
+
+Instance.new("UICorner",list).CornerRadius = UDim.new(0,7)
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0,6)
+layout.Parent = list
+
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    list.CanvasSize = UDim2.new(
+        0,0,0,
+        layout.AbsoluteContentSize.Y + 10
+    )
+end)
+
+-- DRAG
+local dragging = false
+local dragStart
+local startPos
+
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+    or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if not dragging then return end
+
+    if input.UserInputType == Enum.UserInputType.Touch
+    or input.UserInputType == Enum.UserInputType.MouseMovement then
+
+        local delta = input.Position - dragStart
+
+        main.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+    or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
+
+-- GUI IS NOW CREATED
+status.Text = "GUI loaded ✅"
+
+--------------------------------------------------
+-- SERVER SEARCH
+--------------------------------------------------
+
+local requestFunction =
+    request or
+    http_request or
+    (syn and syn.request)
+
+local function clearList()
+    for _,v in ipairs(list:GetChildren()) do
+        if v:IsA("Frame") then
+            v:Destroy()
+        end
+    end
+end
+
+local function addServer(server,index)
+
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1,-8,0,60)
+    card.BackgroundColor3 = Color3.fromRGB(35,35,35)
+    card.BorderSizePixel = 0
+    card.Parent = list
+
+    Instance.new("UICorner",card).CornerRadius = UDim.new(0,7)
+
+    local info = Instance.new("TextLabel")
+    info.Size = UDim2.new(1,-75,1,0)
+    info.Position = UDim2.fromOffset(8,0)
+    info.BackgroundTransparency = 1
+    info.Text = "Server "..index.."  •  👤 "..server.playing.."/"..server.maxPlayers
+    info.TextColor3 = Color3.new(1,1,1)
+    info.TextSize = 12
+    info.Font = Enum.Font.Gotham
+    info.TextXAlignment = Enum.TextXAlignment.Left
+    info.Parent = card
+
+    local join = Instance.new("TextButton")
+    join.Size = UDim2.fromOffset(58,30)
+    join.Position = UDim2.new(1,-65,.5,-15)
+    join.Text = "JOIN"
+    join.TextSize = 11
+    join.TextColor3 = Color3.new(1,1,1)
+    join.Font = Enum.Font.GothamBold
+    join.BackgroundColor3 = Color3.fromRGB(55,175,85)
+    join.Parent = card
+
+    Instance.new("UICorner",join).CornerRadius = UDim.new(0,6)
+
+    join.MouseButton1Click:Connect(function()
+
+        status.Text = "Joining..."
+
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(
+                game.PlaceId,
+                server.id,
+                player
+            )
+        end)
+
+    end)
+end
+
+local searching = false
+
+local function findServers()
+
+    if searching then return end
+    searching = true
+
+    clearList()
+    status.Text = "Searching..."
+
+    if not requestFunction then
+        status.Text = "❌ HTTP request unavailable"
+        searching = false
+        return
+    end
+
+    local url =
+        "https://games.roblox.com/v1/games/"
+        ..game.PlaceId..
+        "/servers/Public?sortOrder=Asc&limit=100"
+
+    local ok,response = pcall(function()
+        return requestFunction({
+            Url = url,
+            Method = "GET"
+        })
+    end)
+
+    if not ok or not response then
+        status.Text = "❌ Request failed"
+        searching = false
+        return
+    end
+
+    local body = response.Body or response.body
+
+    if not body then
+        status.Text = "❌ No data"
+        searching = false
+        return
+    end
+
+    local decodedOk,data = pcall(function()
+        return HttpService:JSONDecode(body)
+    end)
+
+    if not decodedOk then
+        status.Text = "❌ Invalid data"
+        searching = false
+        return
+    end
+
+    local found = 0
+
+    for _,server in ipairs(data.data or {}) do
+
+        if server.id ~= game.JobId
+        and tonumber(server.playing) == 1 then
+
+            found += 1
+            addServer(server,found)
+        end
+    end
+
+    if found == 0 then
+        status.Text = "No 1-player server found"
+    else
+        status.Text = "Found "..found.." server(s)"
+    end
+
+    searching = false
+end
+
+search.MouseButton1Click:Connect(function()
+    task.spawn(findServers)
+end)
+
+-- AUTO SEARCH AFTER GUI LOADS
+task.delay(1,function()
+    if gui.Parent then
+        findServers()
+    end
+end)
