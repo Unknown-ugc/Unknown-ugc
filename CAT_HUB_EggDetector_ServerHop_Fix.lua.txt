@@ -1,0 +1,408 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+local requestFunc = syn and syn.request or http and http.request or http_request or request
+
+local Assets = require(ReplicatedStorage.Data.Assets)
+local Mutations = require(ReplicatedStorage.Shared.Modules.Mutations)
+local Networking = ReplicatedStorage.Packages.Networking
+
+-- Set these locally. Never publish webhook URLs.
+local WEBHOOK_PRIVATE = "PRIVATE_ALL_EGGS_WEBHOOK_URL"
+local WEBHOOK_PUBLIC = "PUBLIC_MONEY_EGGS_WEBHOOK_URL"
+
+local MIN_PUBLIC_VALUE = 100e6
+local MAX_PUBLIC_VALUE = 800e6
+
+local SCAN_DURATION = 15
+local BLACKLIST_FILE = "scanned_servers.txt"
+local MAX_SERVER_PAGES = 10 -- Public server API returns up to 100 servers per page
+local TELEPORT_RETRY_DELAY = 3
+
+local blacklist = {}
+
+local function loadBlacklist()
+    if isfile and isfile(BLACKLIST_FILE) then
+        local ok, content = pcall(readfile, BLACKLIST_FILE)
+        if ok and type(content) == "string" then
+            for line in string.gmatch(content, "[^\r\n]+") do
+                blacklist[line] = true
+            end
+        end
+    end
+end
+
+local function addToBlacklist(jobId)
+    blacklist[jobId] = true
+    if writefile then
+        local content = ""
+        for id in pairs(blacklist) do
+            content = content .. id .. "\n"
+        end
+        pcall(writefile, BLACKLIST_FILE, content)
+    end
+end
+
+loadBlacklist()
+
+local function getScaleMultiplier(scale)
+    scale = tonumber(scale) or 1
+    if scale <= 5 then
+        return scale ^ 1.85
+    end
+    return (scale / 5) ^ 1.2 * 19.637875755794113
+end
+
+local function formatMoney(value)
+    local units = {
+        {1e12, "T"},
+        {1e9, "B"},
+        {1e6, "M"},
+        {1e3, "K"}
+    }
+    for _, unit in ipairs(units) do
+        if value >= unit[1] then
+            return string.format("$%.2f%s/s", value / unit[1], unit[2])
+        end
+    end
+    return string.format("$%d/s", math.floor(value + 0.5))
+end
+
+local function getSizeName(scale)
+    scale = tonumber(scale) or 1
+    if scale >= 100 then
+        return "Titanic"
+    elseif scale >= 30 then
+        return "Large"
+    elseif scale >= 10 then
+        return "Medium"
+    end
+    return "Small"
+end
+
+local function sendWebhook(url, payload, label)
+    if type(requestFunc) ~= "function" then
+        warn("[CAT HUB] No compatible HTTP request function found.")
+        return false
+    end
+    if type(url) ~= "string" or url == "" or url:find("_WEBHOOK_URL", 1, true) then
+        warn("[CAT HUB] Set the " .. label .. " webhook URL first.")
+        return false
+    end
+
+    local ok, response = pcall(function()
+        return requestFunc({
+            Url = url,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode(payload)
+        })
+    end)
+
+    if not ok then
+        warn("[CAT HUB] " .. label .. " webhook failed:", response)
+        return false
+    end
+
+    local status = response and (response.StatusCode or response.Status)
+    if status and tonumber(status) and tonumber(status) >= 400 then
+        warn("[CAT HUB] " .. label .. " webhook returned HTTP", status)
+        return false
+    end
+    return true
+end
+
+local function pushPrivateWebhook(egg)
+    local payload = {
+        content = "EGG",
+        embeds = {{
+            title = "New Egg Found",
+            description = HttpService:JSONEncode({egg})
+        }}
+    }
+    sendWebhook(WEBHOOK_PRIVATE, payload, "private")
+end
+
+-- Embed format makes the join URL visible and clickable in Discord.
+-- Link behavior may vary by device and Roblox client.
+local function pushPublicWebhook(egg)
+    local placeId = tostring(game.PlaceId)
+    local serverId = tostring(egg.serverId or "")
+    local joinLink = string.format(
+        "https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s",
+        placeId,
+        serverId
+    )
+
+    local payload = {
+        embeds = {{
+            title = tostring(egg.name or "Unknown Egg"),
+            description = string.format(
+                "**Rarity:** %s\n**KG/Size:** %s (%.1f)\n**Money:** %s",
+                tostring(egg.rarity or "Unknown"),
+                tostring(egg.sizeName or "Small"),
+                tonumber(egg.scale) or 1,
+                tostring(egg.value or "$0/s")
+            ),
+            url = joinLink,
+            color = 16766720,
+            fields = {{
+                name = "🔗 JOIN SERVER",
+                value = joinLink,
+                inline = false
+            }},
+            footer = {text = "CAT HUB • Egg Detector"}
+        }}
+    }
+
+    sendWebhook(WEBHOOK_PUBLIC, payload, "public")
+end
+
+local function getEggs()
+    local records = {}
+    local ok, result = pcall(function()
+        local remote = Networking:FindFirstChild("RF/EggWorld/AskFieldEggSnapshot")
+        assert(remote, "Egg snapshot remote was not found")
+        return remote:InvokeServer()
+    end)
+
+    if ok and type(result) == "table" and type(result.Records) == "table" then
+        records = result.Records
+    else
+        warn("[CAT HUB] Could not read egg snapshot:", result)
+    end
+
+    -- Diagnostic counts help identify records excluded by the State filter.
+    local stateCounts = {}
+    for _, record in pairs(records) do
+        local state = tostring(record.State or "nil")
+        stateCounts[state] = (stateCounts[state] or 0) + 1
+    end
+    print("[CAT HUB] Snapshot records:", #records)
+    for state, count in pairs(stateCounts) do
+        print("[CAT HUB] State:", state, "Count:", count)
+    end
+
+    local currentEggs = {}
+    for _, record in pairs(records) do
+        if record.State == "Slot" or record.State == "Dropped" then
+            local entry = Assets.Directory[tostring(record.AssetCategory)]
+            if entry then
+                local icon = ""
+                if entry.Icon and tostring(entry.Icon) ~= "" then
+                    icon = tonumber(entry.Icon) and ("rbxassetid://" .. entry.Icon) or tostring(entry.Icon)
+                end
+
+                local mutation = 1
+                if Mutations and type(Mutations.EarningsFor) == "function" then
+                    local okM, resM = pcall(
+                        Mutations.EarningsFor,
+                        type(record.Mutations) == "table" and record.Mutations or {}
+                    )
+                    if okM and type(resM) == "number" then
+                        mutation = resM
+                    end
+                end
+
+                local scale = tonumber(record.AssetScale) or 1
+                local value = (tonumber(entry.EarningRate) or 0) * getScaleMultiplier(scale) * mutation
+
+                currentEggs[tostring(record.Uid or record.AssetCategory)] = {
+                    name = tostring(entry.DisplayName or record.AssetCategory),
+                    serverId = game.JobId,
+                    rarity = entry.Rarity and tostring(entry.Rarity.DisplayName or entry.Rarity.Name) or "Unknown",
+                    sizeName = getSizeName(scale),
+                    scale = scale,
+                    value = formatMoney(value),
+                    valueNum = value,
+                    image = icon
+                }
+            end
+        end
+    end
+
+    print("[CAT HUB] Eggs included by current State filter:", #currentEggs)
+    return currentEggs
+end
+
+local function getServers()
+    local servers = {}
+    local seen = {}
+
+    -- Executor-provided server lists are used if available.
+    if type(getservers) == "function" then
+        pcall(function()
+            local result = getservers()
+            if type(result) == "table" then
+                for _, server in ipairs(result) do
+                    local id = server.id or server.Id or server.jobId
+                    if id and not seen[tostring(id)] then
+                        seen[tostring(id)] = true
+                        table.insert(servers, {
+                            id = tostring(id),
+                            playing = server.playing or server.Playing,
+                            max = server.maxPlayers or server.max or server.MaxPlayers
+                        })
+                    end
+                end
+            end
+        end)
+    end
+
+    -- If the executor list is unavailable/empty, read multiple public-server pages.
+    -- This only lists publicly discoverable servers; it cannot guarantee every server.
+    if #servers == 0 then
+        local cursor = nil
+        for page = 1, MAX_SERVER_PAGES do
+            local ok, result = pcall(function()
+                local url = "https://games.roblox.com/v1/games/" ..
+                    tostring(game.PlaceId) .. "/servers/Public?sortOrder=Asc&limit=100"
+                if cursor and cursor ~= "" then
+                    url = url .. "&cursor=" .. HttpService:UrlEncode(cursor)
+                end
+                local response = HttpService:JSONDecode(game:HttpGet(url))
+                return response
+            end)
+
+            if not ok or type(result) ~= "table" or type(result.data) ~= "table" then
+                warn("[CAT HUB] Could not fetch public server page:", page)
+                break
+            end
+
+            for _, server in ipairs(result.data) do
+                local id = server.id
+                if id and not seen[tostring(id)] then
+                    seen[tostring(id)] = true
+                    table.insert(servers, {
+                        id = tostring(id),
+                        playing = server.playing,
+                        max = server.maxPlayers
+                    })
+                end
+            end
+
+            cursor = result.nextPageCursor
+            if not cursor or cursor == "" then
+                break
+            end
+        end
+    end
+
+    -- Prefer servers with the most free slots.
+    table.sort(servers, function(a, b)
+        local aPlaying = tonumber(a.playing) or 0
+        local aMax = tonumber(a.max) or 0
+        local bPlaying = tonumber(b.playing) or 0
+        local bMax = tonumber(b.max) or 0
+        local aFree = aMax > 0 and (aMax - aPlaying) or -1
+        local bFree = bMax > 0 and (bMax - bPlaying) or -1
+        return aFree > bFree
+    end)
+
+    return servers
+end
+
+local function hopServer()
+    -- Mark this server as visited before choosing the next one.
+    if game.JobId and game.JobId ~= "" then
+        addToBlacklist(game.JobId)
+    end
+
+    local servers = getServers()
+    local candidates = {}
+
+    for _, server in ipairs(servers) do
+        local id = tostring(server.id or "")
+        local playing = tonumber(server.playing)
+        local maxPlayers = tonumber(server.max)
+        local full = playing and maxPlayers and maxPlayers > 0 and playing >= maxPlayers
+
+        if id ~= "" and id ~= game.JobId and not blacklist[id] and not full then
+            table.insert(candidates, server)
+        end
+    end
+
+    if #candidates == 0 then
+        -- Do not clear the visited list just because one API page/list is exhausted.
+        -- Tell the user the currently discoverable candidates have been exhausted.
+        warn("[CAT HUB] No unvisited, non-full public servers found. Keeping visit history.")
+        warn("[CAT HUB] Restart the scanner later if you want to begin a new scan cycle.")
+        return
+    end
+
+    for _, server in ipairs(candidates) do
+        local id = tostring(server.id)
+        print("[CAT HUB] Trying server:", id,
+            "players:", tostring(server.playing),
+            "max:", tostring(server.max))
+
+        local teleportStarted = false
+        local connection
+        pcall(function()
+            connection = TeleportService.TeleportInitFailed:Connect(function(player, result, message)
+                if player == Players.LocalPlayer then
+                    warn("[CAT HUB] Teleport failed:", tostring(result), tostring(message))
+                end
+            end)
+        end)
+
+        local ok, err = pcall(function()
+            TeleportService:TeleportToPlaceInstance(
+                game.PlaceId,
+                id,
+                Players.LocalPlayer
+            )
+            teleportStarted = true
+        end)
+
+        if connection then
+            task.delay(TELEPORT_RETRY_DELAY, function()
+                pcall(function() connection:Disconnect() end)
+            end)
+        end
+
+        if ok and teleportStarted then
+            -- Mark the destination visited to prevent selecting it again if teleport fails
+            -- and the script continues in the current session.
+            addToBlacklist(id)
+            return
+        end
+
+        warn("[CAT HUB] Could not start teleport to " .. id .. ": " .. tostring(err))
+        addToBlacklist(id)
+        task.wait(0.5)
+    end
+
+    warn("[CAT HUB] All candidates in the fetched list failed or were unavailable.")
+end
+
+task.spawn(function()
+    task.wait(5)
+    local startTime = tick()
+    local firstScan = getEggs()
+
+    for _, egg in pairs(firstScan) do
+        pushPrivateWebhook(egg)
+        if egg.valueNum >= MIN_PUBLIC_VALUE and egg.valueNum <= MAX_PUBLIC_VALUE then
+            pushPublicWebhook(egg)
+        end
+    end
+
+    while (tick() - startTime) < SCAN_DURATION do
+        task.wait(2)
+        local currentList = getEggs()
+        for uid, egg in pairs(currentList) do
+            if not firstScan[uid] then
+                pushPrivateWebhook(egg)
+                if egg.valueNum >= MIN_PUBLIC_VALUE and egg.valueNum <= MAX_PUBLIC_VALUE then
+                    pushPublicWebhook(egg)
+                end
+                firstScan[uid] = egg
+            end
+        end
+    end
+
+    task.wait(3)
+    hopServer()
+end)
