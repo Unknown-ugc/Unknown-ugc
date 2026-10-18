@@ -116,6 +116,7 @@ local function normImg(img)
 end
 local function pick(e, ...)
     for _, k in ipairs({ ... }) do if e[k] ~= nil and e[k] ~= "" then return e[k] end end
+    return nil
 end
 local function normalize(e)
     if type(e) ~= "table" then return nil end
