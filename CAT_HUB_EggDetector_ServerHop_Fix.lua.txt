@@ -9,8 +9,8 @@ local Mutations = require(ReplicatedStorage.Shared.Modules.Mutations)
 local Networking = ReplicatedStorage.Packages.Networking
 
 -- Set these locally. Never publish webhook URLs.
-local WEBHOOK_PRIVATE = "PRIVATE_ALL_EGGS_WEBHOOK_URL"
-local WEBHOOK_PUBLIC = "PUBLIC_MONEY_EGGS_WEBHOOK_URL"
+local WEBHOOK_PRIVATE = "https://discord.com/api/webhooks/1560925485653827644/Fzi4UpnEhPTa_mXrAmHlPUwMBtUgSWGEeP3GjrCJucjponSEtCulfKRkWjhqzDrjeX_k"
+local WEBHOOK_PUBLIC = "https://discord.com/api/webhooks/1560926037238485052/V-bKGmBmpn05ksY0iCE_ZjhuxBiRQmxhqxCGDS50vncEZjMcSmHNgmTw3PtWdn7kjxv5"
 
 local MIN_PUBLIC_VALUE = 100e6
 local MAX_PUBLIC_VALUE = 800e6
