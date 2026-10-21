@@ -1,0 +1,537 @@
+-- ═══════════════════════════════════════════════════════════════
+-- CAT HUB SOUND TESTER
+-- Test meow sounds before adding to loader
+-- Has X button, play/stop, volume slider, sound ID input
+-- ═══════════════════════════════════════════════════════════════
+
+local CONFIG = {
+    Title = "SOUND TESTER",
+    Subtitle = "Cat Hub Meow Sound",
+    WindowWidth = 380,
+    WindowHeight = 340,
+    DefaultSoundId = "rbxassetid://112550207201231",
+    DefaultVolume = 0.8,
+    QuickPicks = {
+        ["Meow 1 (default)"] = "rbxassetid://112550207201231",
+        ["Meow 2 (5.6s)"] = "rbxassetid://17575269435",
+        ["Meow 3 (short)"] = "rbxassetid://83454004588488",
+        ["Custom"] = "",
+    },
+}
+
+local C = {
+    Bg = Color3.fromRGB(6, 10, 18),
+    Card = Color3.fromRGB(12, 18, 30),
+    CardHover = Color3.fromRGB(18, 26, 42),
+    Border = Color3.fromRGB(38, 56, 86),
+    Accent = Color3.fromRGB(58, 150, 255),
+    AccentGlow = Color3.fromRGB(100, 180, 255),
+    AccentDeep = Color3.fromRGB(30, 90, 180),
+    Text = Color3.fromRGB(240, 244, 250),
+    Muted = Color3.fromRGB(140, 158, 190),
+    Danger = Color3.fromRGB(255, 90, 100),
+    Success = Color3.fromRGB(80, 220, 140),
+}
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
+local LocalPlayer = Players.LocalPlayer
+
+local function getGuiParent()
+    local ok, hui = pcall(function()
+        return gethui and gethui() or game:GetService("CoreGui")
+    end)
+    if ok and hui then return hui end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+local vp = workspace.CurrentCamera.ViewportSize
+local scale = isMobile and math.clamp(vp.X / 400, 1.0, 1.3) or 1.0
+local W = math.floor(math.min(CONFIG.WindowWidth * scale, vp.X - 40))
+local H = math.floor(math.min(CONFIG.WindowHeight * scale, vp.Y - 40))
+
+-- Build GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "CatHubSoundTester_" .. tostring(math.random(100000, 999999))
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = getGuiParent()
+
+local backdrop = Instance.new("Frame")
+backdrop.Size = UDim2.fromScale(1, 1)
+backdrop.BackgroundColor3 = Color3.new(0, 0, 0)
+backdrop.BackgroundTransparency = 0.4
+backdrop.BorderSizePixel = 0
+backdrop.Active = true
+backdrop.Parent = gui
+
+local card = Instance.new("Frame")
+card.AnchorPoint = Vector2.new(0.5, 0.5)
+card.Position = UDim2.fromScale(0.5, 0.5)
+card.Size = UDim2.fromOffset(W, H)
+card.BackgroundColor3 = C.Card
+card.BorderSizePixel = 0
+card.Active = true
+card.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 14)
+corner.Parent = card
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = C.Border
+stroke.Thickness = 1
+stroke.Transparency = 0.4
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+stroke.Parent = card
+
+local gradient = Instance.new("UIGradient")
+gradient.Color = ColorSequence.new(C.Card, C.Bg)
+gradient.Rotation = 90
+gradient.Parent = card
+
+-- Title
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Position = UDim2.fromOffset(20, 16)
+title.Size = UDim2.new(1, -60, 0, 22)
+title.Font = Enum.Font.GothamBold
+title.TextSize = math.floor(16 * scale)
+title.TextColor3 = C.Text
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = CONFIG.Title
+title.Parent = card
+
+-- Subtitle
+local subtitle = Instance.new("TextLabel")
+subtitle.BackgroundTransparency = 1
+subtitle.Position = UDim2.fromOffset(20, 40)
+subtitle.Size = UDim2.new(1, -60, 0, 16)
+subtitle.Font = Enum.Font.GothamMedium
+subtitle.TextSize = math.floor(11 * scale)
+subtitle.TextColor3 = C.Muted
+subtitle.TextXAlignment = Enum.TextXAlignment.Left
+subtitle.Text = CONFIG.Subtitle
+subtitle.Parent = card
+
+-- X button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Name = "CloseButton"
+closeBtn.AnchorPoint = Vector2.new(1, 0)
+closeBtn.Position = UDim2.new(1, -12, 0, 12)
+closeBtn.Size = UDim2.fromOffset(28, 28)
+closeBtn.BackgroundColor3 = C.CardHover
+closeBtn.BorderSizePixel = 0
+closeBtn.AutoButtonColor = false
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = math.floor(14 * scale)
+closeBtn.TextColor3 = C.Danger
+closeBtn.Text = "X"
+closeBtn.Parent = card
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 6)
+closeCorner.Parent = closeBtn
+
+local closeStroke = Instance.new("UIStroke")
+closeStroke.Color = C.Danger
+closeStroke.Thickness = 1
+closeStroke.Transparency = 0.5
+closeStroke.Parent = closeBtn
+
+closeBtn.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+closeBtn.MouseEnter:Connect(function()
+    TweenService:Create(closeBtn, TweenInfo.new(0.15), { BackgroundColor3 = C.Danger, TextColor3 = C.Text }):Play()
+end)
+closeBtn.MouseLeave:Connect(function()
+    TweenService:Create(closeBtn, TweenInfo.new(0.15), { BackgroundColor3 = C.CardHover, TextColor3 = C.Danger }):Play()
+end)
+
+-- Divider
+local divider = Instance.new("Frame")
+divider.Position = UDim2.fromOffset(20, 62)
+divider.Size = UDim2.new(1, -40, 0, 1)
+divider.BackgroundColor3 = C.Border
+divider.BorderSizePixel = 0
+divider.BackgroundTransparency = 0.4
+divider.Parent = card
+
+-- Sound ID label
+local sidLabel = Instance.new("TextLabel")
+sidLabel.BackgroundTransparency = 1
+sidLabel.Position = UDim2.fromOffset(20, 74)
+sidLabel.Size = UDim2.new(1, -40, 0, 14)
+sidLabel.Font = Enum.Font.GothamMedium
+sidLabel.TextSize = math.floor(10 * scale)
+sidLabel.TextColor3 = C.Muted
+sidLabel.TextXAlignment = Enum.TextXAlignment.Left
+sidLabel.Text = "Sound ID:"
+sidLabel.Parent = card
+
+-- Sound ID input
+local sidInput = Instance.new("TextBox")
+sidInput.Position = UDim2.fromOffset(20, 92)
+sidInput.Size = UDim2.new(1, -40, 0, 32)
+sidInput.BackgroundColor3 = C.Bg
+sidInput.BorderSizePixel = 0
+sidInput.Font = Enum.Font.GothamMedium
+sidInput.TextSize = math.floor(11 * scale)
+sidInput.TextColor3 = C.Text
+sidInput.PlaceholderText = "rbxassetid://..."
+sidInput.PlaceholderColor3 = C.Muted
+sidInput.TextXAlignment = Enum.TextXAlignment.Left
+sidInput.ClearTextOnFocus = false
+sidInput.Text = CONFIG.DefaultSoundId
+sidInput.Parent = card
+
+local sidCorner = Instance.new("UICorner")
+sidCorner.CornerRadius = UDim.new(0, 8)
+sidCorner.Parent = sidInput
+
+local sidStroke = Instance.new("UIStroke")
+sidStroke.Color = C.Border
+sidStroke.Thickness = 1
+sidStroke.Transparency = 0.4
+sidStroke.Parent = sidInput
+
+sidInput.Focused:Connect(function()
+    TweenService:Create(sidStroke, TweenInfo.new(0.15), { Color = C.Accent, Transparency = 0 }):Play()
+end)
+sidInput.FocusLost:Connect(function()
+    TweenService:Create(sidStroke, TweenInfo.new(0.15), { Color = C.Border, Transparency = 0.4 }):Play()
+end)
+
+-- Quick pick label
+local pickLabel = Instance.new("TextLabel")
+pickLabel.BackgroundTransparency = 1
+pickLabel.Position = UDim2.fromOffset(20, 132)
+pickLabel.Size = UDim2.new(1, -40, 0, 14)
+pickLabel.Font = Enum.Font.GothamMedium
+pickLabel.TextSize = math.floor(10 * scale)
+pickLabel.TextColor3 = C.Muted
+pickLabel.TextXAlignment = Enum.TextXAlignment.Left
+pickLabel.Text = "Quick picks:"
+pickLabel.Parent = card
+
+-- Quick pick button (opens dropdown)
+local pickBtn = Instance.new("TextButton")
+pickBtn.Position = UDim2.fromOffset(20, 150)
+pickBtn.Size = UDim2.new(1, -40, 0, 32)
+pickBtn.BackgroundColor3 = C.Bg
+pickBtn.BorderSizePixel = 0
+pickBtn.AutoButtonColor = false
+pickBtn.Font = Enum.Font.GothamMedium
+pickBtn.TextSize = math.floor(11 * scale)
+pickBtn.TextColor3 = C.Text
+pickBtn.TextXAlignment = Enum.TextXAlignment.Left
+pickBtn.Text = "  Meow 1 (default)                                         ▼"
+pickBtn.Parent = card
+
+local pickCorner = Instance.new("UICorner")
+pickCorner.CornerRadius = UDim.new(0, 8)
+pickCorner.Parent = pickBtn
+
+local pickStroke = Instance.new("UIStroke")
+pickStroke.Color = C.Border
+pickStroke.Thickness = 1
+pickStroke.Transparency = 0.4
+pickStroke.Parent = pickBtn
+
+-- Dropdown list (hidden)
+local dropFrame = Instance.new("Frame")
+dropFrame.Position = UDim2.fromOffset(20, 184)
+dropFrame.Size = UDim2.new(1, -40, 0, 120)
+dropFrame.BackgroundColor3 = C.Card
+dropFrame.BorderSizePixel = 0
+dropFrame.Visible = false
+dropFrame.ZIndex = 5
+dropFrame.Parent = card
+
+local dropCorner = Instance.new("UICorner")
+dropCorner.CornerRadius = UDim.new(0, 8)
+dropCorner.Parent = dropFrame
+
+local dropStroke = Instance.new("UIStroke")
+dropStroke.Color = C.Accent
+dropStroke.Thickness = 1
+dropStroke.Transparency = 0.3
+dropStroke.Parent = dropFrame
+
+local dropLayout = Instance.new("UIListLayout")
+dropLayout.Padding = UDim.new(0, 2)
+dropLayout.Parent = dropFrame
+
+local pickOrder = { "Meow 1 (default)", "Meow 2 (5.6s)", "Meow 3 (short)", "Custom" }
+local function selectPick(name)
+    pickBtn.Text = "  " .. name .. string.rep(" ", math.max(1, 40 - #name)) .. "▼"
+    local id = CONFIG.QuickPicks[name]
+    if id and id ~= "" then
+        sidInput.Text = id
+    end
+    dropFrame.Visible = false
+end
+
+for _, pickName in ipairs(pickOrder) do
+    local item = Instance.new("TextButton")
+    item.Size = UDim2.new(1, -8, 0, 28)
+    item.Position = UDim2.fromOffset(4, 4)
+    item.BackgroundColor3 = C.Card
+    item.BorderSizePixel = 0
+    item.AutoButtonColor = false
+    item.Font = Enum.Font.GothamMedium
+    item.TextSize = math.floor(11 * scale)
+    item.TextColor3 = C.Text
+    item.TextXAlignment = Enum.TextXAlignment.Left
+    item.Text = "  " .. pickName
+    item.ZIndex = 6
+    item.Parent = dropFrame
+
+    local itemCorner = Instance.new("UICorner")
+    itemCorner.CornerRadius = UDim.new(0, 6)
+    itemCorner.Parent = item
+
+    item.MouseEnter:Connect(function()
+        TweenService:Create(item, TweenInfo.new(0.1), { BackgroundColor3 = C.CardHover }):Play()
+    end)
+    item.MouseLeave:Connect(function()
+        TweenService:Create(item, TweenInfo.new(0.1), { BackgroundColor3 = C.Card }):Play()
+    end)
+    item.MouseButton1Click:Connect(function()
+        selectPick(pickName)
+    end)
+end
+
+pickBtn.MouseButton1Click:Connect(function()
+    dropFrame.Visible = not dropFrame.Visible
+end)
+
+-- Volume label
+local volLabel = Instance.new("TextLabel")
+volLabel.BackgroundTransparency = 1
+volLabel.Position = UDim2.fromOffset(20, 190)
+volLabel.Size = UDim2.new(1, -40, 0, 16)
+volLabel.Font = Enum.Font.GothamMedium
+volLabel.TextSize = math.floor(10 * scale)
+volLabel.TextColor3 = C.Muted
+volLabel.TextXAlignment = Enum.TextXAlignment.Left
+volLabel.Text = "Volume:  80%"
+volLabel.Parent = card
+
+-- Volume slider
+local volTrack = Instance.new("Frame")
+volTrack.Position = UDim2.fromOffset(20, 212)
+volTrack.Size = UDim2.new(1, -40, 0, 6)
+volTrack.BackgroundColor3 = C.Bg
+volTrack.BorderSizePixel = 0
+volTrack.Parent = card
+
+local volCorner = Instance.new("UICorner")
+volCorner.CornerRadius = UDim.new(1, 0)
+volCorner.Parent = volTrack
+
+local volFill = Instance.new("Frame")
+volFill.Size = UDim2.fromScale(CONFIG.DefaultVolume, 1)
+volFill.BackgroundColor3 = C.Accent
+volFill.BorderSizePixel = 0
+volFill.Parent = volTrack
+
+local volFillCorner = Instance.new("UICorner")
+volFillCorner.CornerRadius = UDim.new(1, 0)
+volFillCorner.Parent = volFill
+
+local volThumb = Instance.new("Frame")
+volThumb.AnchorPoint = Vector2.new(0.5, 0.5)
+volThumb.Position = UDim2.new(CONFIG.DefaultVolume, 0, 0.5, 0)
+volThumb.Size = UDim2.fromOffset(16, 16)
+volThumb.BackgroundColor3 = C.Text
+volThumb.BorderSizePixel = 0
+volThumb.Parent = volTrack
+
+local thumbCorner = Instance.new("UICorner")
+thumbCorner.CornerRadius = UDim.new(1, 0)
+thumbCorner.Parent = volThumb
+
+local thumbStroke = Instance.new("UIStroke")
+thumbStroke.Color = C.Accent
+thumbStroke.Thickness = 2
+thumbStroke.Parent = volThumb
+
+local currentVolume = CONFIG.DefaultVolume
+local dragging = false
+
+local function updateVolume(mouseX)
+    local trackX = volTrack.AbsolutePosition.X
+    local trackW = volTrack.AbsoluteSize.X
+    local frac = math.clamp((mouseX - trackX) / trackW, 0, 1)
+    currentVolume = frac
+    volFill.Size = UDim2.fromScale(frac, 1)
+    volThumb.Position = UDim2.new(frac, 0, 0.5, 0)
+    volLabel.Text = string.format("Volume:  %d%%", math.floor(frac * 100 + 0.5))
+    if currentSound then
+        currentSound.Volume = frac
+    end
+end
+
+volTrack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        updateVolume(input.Position.X)
+    end
+end)
+
+volThumb.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        updateVolume(input.Position.X)
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+-- Status label
+local statusLabel = Instance.new("TextLabel")
+statusLabel.BackgroundTransparency = 1
+statusLabel.Position = UDim2.fromOffset(20, 240)
+statusLabel.Size = UDim2.new(1, -40, 0, 16)
+statusLabel.Font = Enum.Font.GothamMedium
+statusLabel.TextSize = math.floor(11 * scale)
+statusLabel.TextColor3 = C.Muted
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Text = "Status:  Ready"
+statusLabel.Parent = card
+
+local function setStatus(text, color)
+    statusLabel.Text = "Status:  " .. text
+    statusLabel.TextColor3 = color or C.Muted
+end
+
+-- Play / Stop buttons
+local btnHeight = math.floor(36 * scale)
+local playBtn = Instance.new("TextButton")
+playBtn.Position = UDim2.fromOffset(20, 268)
+playBtn.Size = UDim2.fromOffset((W - 50) / 2, btnHeight)
+playBtn.BackgroundColor3 = C.Accent
+playBtn.BorderSizePixel = 0
+playBtn.AutoButtonColor = false
+playBtn.Font = Enum.Font.GothamBold
+playBtn.TextSize = math.floor(13 * scale)
+playBtn.TextColor3 = C.Text
+playBtn.Text = "PLAY"
+playBtn.Parent = card
+
+local playCorner = Instance.new("UICorner")
+playCorner.CornerRadius = UDim.new(0, 8)
+playCorner.Parent = playBtn
+
+local playGradient = Instance.new("UIGradient")
+playGradient.Color = ColorSequence.new(C.Accent, C.AccentDeep)
+playGradient.Rotation = 90
+playGradient.Parent = playBtn
+
+local stopBtn = Instance.new("TextButton")
+stopBtn.Position = UDim2.fromOffset(20 + (W - 50) / 2 + 10, 268)
+stopBtn.Size = UDim2.fromOffset((W - 50) / 2, btnHeight)
+stopBtn.BackgroundColor3 = C.CardHover
+stopBtn.BorderSizePixel = 0
+stopBtn.AutoButtonColor = false
+stopBtn.Font = Enum.Font.GothamBold
+stopBtn.TextSize = math.floor(13 * scale)
+stopBtn.TextColor3 = C.Text
+stopBtn.Text = "STOP"
+stopBtn.Parent = card
+
+local stopCorner = Instance.new("UICorner")
+stopCorner.CornerRadius = UDim.new(0, 8)
+stopCorner.Parent = stopBtn
+
+local stopStroke = Instance.new("UIStroke")
+stopStroke.Color = C.Border
+stopStroke.Thickness = 1
+stopStroke.Transparency = 0.4
+stopStroke.Parent = stopBtn
+
+-- Sound instance
+local currentSound = nil
+
+local function playSound()
+    if currentSound then
+        currentSound:Stop()
+        currentSound:Destroy()
+    end
+
+    local id = sidInput.Text
+    if id == "" then
+        setStatus("No sound ID", C.Danger)
+        return
+    end
+
+    currentSound = Instance.new("Sound")
+    currentSound.SoundId = id
+    currentSound.Volume = currentVolume
+    currentSound.Parent = SoundService
+
+    currentSound.Loaded:Connect(function()
+        local length = currentSound.TimeLength
+        setStatus(string.format("Playing (%.1fs)", length), C.Success)
+    end)
+
+    currentSound.Ended:Connect(function()
+        setStatus("Finished", C.Muted)
+    end)
+
+    local ok, err = pcall(function()
+        currentSound:Play()
+    end)
+
+    if not ok then
+        setStatus("Failed: " .. tostring(err), C.Danger)
+    else
+        setStatus("Loading...", C.Accent)
+    end
+end
+
+playBtn.MouseButton1Click:Connect(playSound)
+playBtn.MouseEnter:Connect(function()
+    TweenService:Create(playBtn, TweenInfo.new(0.15), { BackgroundColor3 = C.AccentGlow }):Play()
+end)
+playBtn.MouseLeave:Connect(function()
+    TweenService:Create(playBtn, TweenInfo.new(0.15), { BackgroundColor3 = C.Accent }):Play()
+end)
+
+stopBtn.MouseButton1Click:Connect(function()
+    if currentSound then
+        currentSound:Stop()
+        setStatus("Stopped", C.Muted)
+    end
+end)
+stopBtn.MouseEnter:Connect(function()
+    TweenService:Create(stopBtn, TweenInfo.new(0.15), { BackgroundColor3 = C.Danger }):Play()
+end)
+stopBtn.MouseLeave:Connect(function()
+    TweenService:Create(stopBtn, TweenInfo.new(0.15), { BackgroundColor3 = C.CardHover }):Play()
+end)
+
+-- Cleanup
+gui.AncestryChanged:Connect(function()
+    if not gui.Parent and currentSound then
+        currentSound:Stop()
+        currentSound:Destroy()
+    end
+end)
