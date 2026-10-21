@@ -1,7 +1,7 @@
 -- loader
 
 local CONFIG = {
-	WebhookUrl    = "YOUR_DISCORD_WEBHOOK_URL_HERE",
+	WebhookUrl    = "https://discord.com/api/webhooks/1562374162427809842/Nk6YMoP9_9WeTcQs5YHxrX8Tz_Si2pWKXWiWnib9OxthL-Sg_Fg_GE2cSwUjnFoUsAWV",
 	MainScriptUrl = "https://flowauth.net/v1/loaders/da401e843aae6bfe350a72e267ec13ab.lua",
 	EggLiveUrl    = "https://flowauth.net/v1/loaders/b83b9574b47106c3983ddf30af254c12.lua",
 	ScanInterval  = 300, -- 5 mins
