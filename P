@@ -1,0 +1,342 @@
+-- ═══════════════════════════════════════════════════════════════
+-- CAT HUB - FACILITY (Compact UI)
+-- ═══════════════════════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LP = Players.LocalPlayer
+local UIS = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+
+-- Clean up old UI kung may nag-run na dati
+local oldUI = CoreGui:FindFirstChild("CatHubFacilityUI")
+if oldUI then oldUI:Destroy() end
+
+-- ==========================================
+-- GUI SETUP (Compact & Dark Theme)
+-- ==========================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CatHubFacilityUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = CoreGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 220, 0, 0) -- Auto-height later
+MainFrame.Position = UDim2.new(0.5, -110, 0.5, -150)
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 4)
+
+local UIList = Instance.new("UIListLayout", MainFrame)
+UIList.SortOrder = Enum.SortOrder.LayoutOrder
+UIList.Padding = UDim.new(0, 2)
+
+-- Title Bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 24)
+TitleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+TitleBar.BorderSizePixel = 0
+TitleBar.LayoutOrder = 1
+TitleBar.Parent = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 4)
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Size = UDim2.new(1, -50, 1, 0)
+TitleText.Position = UDim2.new(0, 8, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.Text = "CAT HUB - FACILITY"
+TitleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleText.Font = Enum.Font.GothamBold
+TitleText.TextSize = 12
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.Parent = TitleBar
+
+-- Minimize Button
+local MinBtn = Instance.new("TextButton")
+MinBtn.Size = UDim2.new(0, 20, 0, 20)
+MinBtn.Position = UDim2.new(1, -45, 0, 2)
+MinBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+MinBtn.Text = "—"
+MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.TextSize = 12
+MinBtn.BorderSizePixel = 0
+MinBtn.Parent = TitleBar
+Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 4)
+
+-- Close Button
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 20, 0, 20)
+CloseBtn.Position = UDim2.new(1, -22, 0, 2)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 12
+CloseBtn.BorderSizePixel = 0
+CloseBtn.Parent = TitleBar
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 4)
+
+-- Content Container
+local ContentFrame = Instance.new("Frame")
+ContentFrame.Size = UDim2.new(1, 0, 0, 0)
+ContentFrame.BackgroundTransparency = 1
+ContentFrame.LayoutOrder = 2
+ContentFrame.Parent = MainFrame
+local ContentLayout = Instance.new("UIListLayout", ContentFrame)
+ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ContentLayout.Padding = UDim.new(0, 4)
+Instance.new("UIPadding", ContentFrame).PaddingTop = UDim.new(0, 4)
+Instance.new("UIPadding", ContentFrame).PaddingBottom = UDim.new(0, 4)
+Instance.new("UIPadding", ContentFrame).PaddingLeft = UDim.new(0, 6)
+Instance.new("UIPadding", ContentFrame).PaddingRight = UDim.new(0, 6)
+
+-- Auto-size MainFrame based on content
+ContentFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    MainFrame.Size = UDim2.new(0, 220, 0, ContentFrame.AbsoluteSize.Y + 28)
+end)
+
+-- Dragging Logic
+local dragging, dragInput, dragStart, startPos
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+TitleBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+end)
+UIS.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- Minimize/Close Logic
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    ContentFrame.Visible = not minimized
+    if minimized then
+        MainFrame.Size = UDim2.new(0, 220, 0, 24)
+    else
+        MainFrame.Size = UDim2.new(0, 220, 0, ContentFrame.AbsoluteSize.Y + 28)
+    end
+end)
+CloseBtn.MouseButton1Click:Connect(function()
+    ScreenGui:Destroy()
+end)
+
+-- ==========================================
+-- UI COMPONENT BUILDERS
+-- ==========================================
+local function MakeCategory(text)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, 0, 0, 16)
+    l.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    l.Text = " " .. text
+    l.TextColor3 = Color3.fromRGB(200, 200, 200)
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.BorderSizePixel = 0
+    l.Parent = ContentFrame
+    Instance.new("UICorner", l).CornerRadius = UDim.new(0, 2)
+    return l
+end
+
+local function MakeToggle(text, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 22)
+    btn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 11
+    btn.BorderSizePixel = 0
+    btn.Parent = ContentFrame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 3)
+    
+    local isOn = false
+    btn.MouseButton1Click:Connect(function()
+        isOn = not isOn
+        btn.BackgroundColor3 = isOn and Color3.fromRGB(58, 150, 255) or Color3.fromRGB(45, 45, 45)
+        btn.TextColor3 = isOn and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 180)
+        callback(isOn)
+    end)
+end
+
+local function MakeSlider(text, min, max, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 26)
+    frame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    frame.BorderSizePixel = 0
+    frame.Parent = ContentFrame
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 3)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -30, 1, 0)
+    lbl.Position = UDim2.new(0, 6, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(180, 180, 180)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = frame
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Size = UDim2.new(0, 25, 1, 0)
+    valLbl.Position = UDim2.new(1, -28, 0, 0)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Text = tostring(default)
+    valLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    valLbl.Font = Enum.Font.GothamBold
+    valLbl.TextSize = 10
+    valLbl.Parent = frame
+
+    local draggingSlider = false
+    frame.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = true
+        end
+    end)
+    UIS.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if draggingSlider and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            local pct = math.clamp((i.Position.X - frame.AbsolutePosition.X) / frame.AbsoluteSize.X, 0, 1)
+            local val = math.floor(min + (max - min) * pct)
+            valLbl.Text = tostring(val)
+            callback(val)
+        end
+    end)
+end
+
+local function MakeButton(text, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 20)
+    btn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 11
+    btn.BorderSizePixel = 0
+    btn.Parent = ContentFrame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 3)
+    
+    btn.MouseButton1Click:Connect(function()
+        btn.BackgroundColor3 = Color3.fromRGB(58, 150, 255)
+        task.wait(0.1)
+        btn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        callback()
+    end)
+end
+
+
+-- ==========================================
+-- 1. PLAYER (ESP)
+-- ==========================================
+MakeCategory("Player")
+local espEnabled = false
+local espObjects = {}
+
+local function createESP(player)
+    if player == LP then return end
+    local function addHighlight(character)
+        if espObjects[character] then return end
+        local hl = Instance.new("Highlight")
+        hl.Adornee = character
+        hl.FillColor = Color3.fromRGB(255, 0, 0)
+        hl.FillTransparency = 0.5
+        hl.Parent = character
+        espObjects[character] = hl
+    end
+    if player.Character then addHighlight(player.Character) end
+    player.CharacterAdded:Connect(function(c) if espEnabled then task.wait(1) addHighlight(c) end end)
+end
+
+MakeToggle("ESP Player", function(state)
+    espEnabled = state
+    if state then
+        for _, p in ipairs(Players:GetPlayers()) do createESP(p) end
+    else
+        for c, h in pairs(espObjects) do if h then h:Destroy() end end
+        espObjects = {}
+    end
+end)
+
+-- ==========================================
+-- 2. MOVEMENT
+-- ==========================================
+MakeCategory("Movement")
+local noclipEnabled = false
+
+MakeToggle("Noclip", function(state)
+    noclipEnabled = state
+end)
+
+RunService.Stepped:Connect(function()
+    if noclipEnabled and LP.Character then
+        for _, p in ipairs(LP.Character:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+    end
+end)
+
+local walkSpeed = 16
+MakeSlider("WalkSpeed", 16, 200, 16, function(val)
+    walkSpeed = val
+    local char = LP.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = walkSpeed end
+    end
+end)
+
+LP.CharacterAdded:Connect(function(char)
+    task.wait(1)
+    local hum = char:WaitForChild("Humanoid")
+    hum.WalkSpeed = walkSpeed
+end)
+
+-- ==========================================
+-- 3. TELEPORT
+-- ==========================================
+MakeCategory("Teleport")
+local function getTables()
+    local t = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj.Name == "ComputerTable" then
+            local pos = obj:IsA("BasePart") and obj.Position or (obj:IsA("Model") and obj:GetPivot().Position or nil)
+            if pos then table.insert(t, pos) end
+        end
+    end
+    return t
+end
+
+local function tpTo(index)
+    local char = LP.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local tables = getTables()
+    if tables[index] then
+        root.CFrame = CFrame.new(tables[index] + Vector3.new(0, 3, 0))
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+end
+
+for i = 1, 5 do
+    MakeButton("Teleport Table " .. i, function() tpTo(i) end)
+end
