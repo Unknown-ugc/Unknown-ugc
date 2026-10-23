@@ -1,0 +1,170 @@
+-- ═══════════════════════════════════════════════════════════════
+-- CAT HUB WIZARD UI
+-- ESP, Noclip, Speed, Teleport
+-- ═══════════════════════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Fallback Library URL para hindi mag-error
+local success, Library = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/BloodBall/Wizard/main/Wizard.lua"))()
+end)
+
+if not success then
+    warn("[Wizard UI] Failed to load library. Make sure executor allows HttpGet.")
+    return
+end
+
+local Window = Library:NewWindow("Cat Hub Features")
+
+-- ==========================================
+-- SECTION 1: ESP PLAYER
+-- ==========================================
+local EspSection = Window:NewSection("ESP Player")
+
+local espEnabled = false
+local espObjects = {}
+
+local function createESP(player)
+    if player == LP then return end
+    
+    local function addHighlight(character)
+        local highlight = Instance.new("Highlight")
+        highlight.Name = "CatHubESP"
+        highlight.Adornee = character
+        highlight.FillColor = Color3.fromRGB(255, 0, 0)
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        highlight.FillTransparency = 0.5
+        highlight.Parent = character
+        espObjects[character] = highlight
+    end
+
+    if player.Character then
+        addHighlight(player.Character)
+    end
+
+    player.CharacterAdded:Connect(function(char)
+        if espEnabled then
+            task.wait(1)
+            addHighlight(char)
+        end
+    end)
+end
+
+EspSection:CreateToggle("ESP Player ON/OFF", function(value)
+    espEnabled = value
+    if value then
+        for _, player in ipairs(Players:GetPlayers()) do
+            createESP(player)
+        end
+    else
+        for char, highlight in pairs(espObjects) do
+            if highlight then highlight:Destroy() end
+        end
+        espObjects = {}
+    end
+end)
+
+Players.PlayerAdded:Connect(function(player)
+    if espEnabled then createESP(player) end
+end)
+
+
+-- ==========================================
+-- SECTION 2: NOCLIP
+-- ==========================================
+local NoclipSection = Window:NewSection("Noclip")
+
+local noclipEnabled = false
+
+NoclipSection:CreateToggle("Noclip ON/OFF", function(value)
+    noclipEnabled = value
+end)
+
+-- Noclip Loop
+RunService.Stepped:Connect(function()
+    if noclipEnabled and LP.Character then
+        for _, part in ipairs(LP.Character:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+    end
+end)
+
+-- ==========================================
+-- SECTION 3: SPEED CHANGER
+-- ==========================================
+local SpeedSection = Window:NewSection("Speed Changer")
+
+local currentSpeed = 16
+
+SpeedSection:CreateSlider("WalkSpeed", 16, 500, 16, false, function(value)
+    currentSpeed = value
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = currentSpeed
+    end
+end)
+
+-- Auto-apply speed on respawn
+LP.CharacterAdded:Connect(function(char)
+    task.wait(1)
+    local hum = char:WaitForChild("Humanoid")
+    hum.WalkSpeed = currentSpeed
+end)
+
+-- ==========================================
+-- SECTION 4: TELEPORT COMPUTER TABLE (1-5)
+-- ==========================================
+local TPSection = Window:NewSection("Teleport Computer Table")
+
+local function getComputerTables()
+    local tables = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj.Name == "ComputerTable" then
+            local pos = nil
+            if obj:IsA("BasePart") then pos = obj.Position
+            elseif obj:IsA("Model") then pos = obj:GetPivot().Position
+            else
+                local part = obj:FindFirstChildWhichIsA("BasePart", true)
+                if part then pos = part.Position end
+            end
+            
+            if pos then
+                table.insert(tables, { object = obj, position = pos })
+            end
+        end
+    end
+    return tables
+end
+
+local function teleportToTable(index)
+    local char = LP.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return warn("Character not loaded.") end
+
+    local tables = getComputerTables()
+    if #tables == 0 then return warn("No ComputerTable found in Workspace.") end
+    
+    local targetTable = tables[index]
+    if not targetTable then
+        return warn("ComputerTable #" .. index .. " does not exist. There are only " .. #tables .. " tables.")
+    end
+
+    root.CFrame = CFrame.new(targetTable.position + Vector3.new(0, 3, 0)) * root.CFrame.Rotation
+    root.AssemblyLinearVelocity = Vector3.zero
+    print("[Teleport] Teleported to ComputerTable #" .. index)
+end
+
+-- Dropdown para pumili ng 1-5
+TPSection:CreateDropdown("Select Table (1-5)", {"Table 1", "Table 2", "Table 3", "Table 4", "Table 5"}, 1, function(selected)
+    local index = tonumber(string.match(selected, "%d+"))
+    if index then
+        teleportToTable(index)
+    end
+end)
