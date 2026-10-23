@@ -1,0 +1,430 @@
+-- Cat Hub | Server Hop + Egg Detector
+-- The script carries its own copy, so auto execute works with NO file and NO URL.
+local SRC = [=====[
+-- Cat Hub | Server Hop + Egg Detector (Luau)
+-- Scans every egg in a server, sends it straight to CAT HUB Live Egg, then hops to the next server. Non-stop.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+local requestFunc = (syn and syn.request) or (http and http.request) or http_request or request or (fluxus and fluxus.request)
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+local genv = (getgenv and getgenv()) or _G
+-- stop duplicate runs (e.g. autoexec + queue_on_teleport firing together)
+if tick() - (genv.__CatHubHopLock or 0) < 5 then return end
+genv.__CatHubHopLock = tick()
+
+-- ===== CONFIG =====
+local API_BASE = "https://cat-hub-api.onrender.com"
+local REPORT_KEY = ""               -- optional: must match REPORT_KEY on the API
+local WEBHOOK_URL = ""              -- optional Discord channel webhook: ONLY eggs worth 1B/s or more (empty = off)
+local WEBHOOK_MIN_VALUE = 1e9       -- 1B/s and up
+
+local MIN_SCAN_TIME = 8             -- minimum seconds before a scan may finish
+local STABLE_SCANS = 3              -- scans in a row with no new egg = scan complete
+local MAX_SCAN_TIME = 40            -- safety limit
+local SCAN_STEP = 2                 -- seconds between snapshots
+local MIN_CANDIDATES = 15           -- stop loading server pages once this many unvisited servers are found
+local TELEPORT_TIMEOUT = 10         -- seconds to wait for a teleport before assuming it started
+local MAX_SERVER_PAGES = 10         -- public server list: up to 100 servers per page
+local VISITED_FILE = "scanned_servers.txt" -- optional extra memory (only used if your executor has file functions)
+
+local AUTO_LOOP = true              -- scan -> hop -> auto run in the next server -> repeat (no file or URL needed)
+local HOP_RETRY_DELAY = 15          -- seconds before trying again if a teleport seems stuck
+local CLEAR_VISITED_WHEN_EXHAUSTED = true -- start a new cycle when every public server was visited
+
+local EGG_REMOTE = "RF/EggWorld/AskFieldEggSnapshot"
+
+-- ===== helpers =====
+local warned = {}
+local function warnOnce(tag, msg)
+	if warned[tag] then return end
+	warned[tag] = true
+	warn("[CAT HUB] " .. msg)
+end
+
+-- visited servers: kept in memory, carried to the next server inside the queued script
+local visited = {}
+do
+	local ids = genv.__CatHubHopIds
+	if type(ids) == "table" then
+		for _, id in ipairs(ids) do visited[tostring(id)] = true end
+	end
+	genv.__CatHubHopIds = nil
+	if isfile and readfile and isfile(VISITED_FILE) then
+		pcall(function()
+			for line in string.gmatch(readfile(VISITED_FILE), "[^\r\n]+") do visited[line] = true end
+		end)
+	end
+end
+local function markVisited(id)
+	if not id or id == "" then return end
+	visited[id] = true
+	if writefile then
+		local parts = {}
+		for k in pairs(visited) do parts[#parts + 1] = k end
+		pcall(writefile, VISITED_FILE, table.concat(parts, "\n"))
+	end
+end
+
+-- ===== auto execute (the script carries its own copy) =====
+local function lb(text) -- long-bracket string that cannot clash with the text inside it
+	local eq = string.rep("=", 8)
+	return "[" .. eq .. "[" .. text .. "]" .. eq .. "]"
+end
+local queuedThisRun = false
+local function queueSelf()
+	if not AUTO_LOOP or queuedThisRun then return end
+	local q = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+	local src = genv.__CatHubHopSource
+	if type(q) ~= "function" or not src then
+		warnOnce("queue", "queue_on_teleport is not supported by your executor. Put this script in your autoexec folder instead.")
+		return
+	end
+	local ids = {}
+	for id in pairs(visited) do
+		ids[#ids + 1] = id
+		if #ids >= 1500 then break end
+	end
+	local code = "local g=(getgenv and getgenv()) or _G; "
+		.. "g.__CatHubHopSource=" .. lb(src) .. "; "
+		.. "g.__CatHubHopIds=game:GetService('HttpService'):JSONDecode(" .. lb(HttpService:JSONEncode(ids)) .. "); "
+		.. "loadstring(g.__CatHubHopSource)()"
+	if pcall(q, code) then queuedThisRun = true end
+end
+
+-- ===== game data =====
+local env = {}
+local function loadEnv()
+	if env.ready then return true end
+	pcall(function() env.Assets = require(ReplicatedStorage:WaitForChild("Data", 15):WaitForChild("Assets", 15)) end)
+	pcall(function() env.Mutations = require(ReplicatedStorage:WaitForChild("Shared", 15):WaitForChild("Modules", 15):WaitForChild("Mutations", 15)) end)
+	pcall(function() env.Networking = ReplicatedStorage:WaitForChild("Packages", 15):WaitForChild("Networking", 15) end)
+	env.ready = env.Assets ~= nil
+	return env.ready
+end
+local function findRemote()
+	local r = env.Networking and env.Networking:FindFirstChild(EGG_REMOTE)
+	if r then return r end
+	return ReplicatedStorage:FindFirstChild(EGG_REMOTE, true)
+end
+local function getScaleMultiplier(scale)
+	scale = tonumber(scale) or 1
+	if scale <= 5 then return scale ^ 1.85 end
+	return (scale / 5) ^ 1.2 * 19.637875755794113
+end
+local function formatMoney(value)
+	local units = { { 1e12, "T" }, { 1e9, "B" }, { 1e6, "M" }, { 1e3, "K" } }
+	for _, unit in ipairs(units) do
+		if value >= unit[1] then return string.format("$%.2f%s/s", value / unit[1], unit[2]) end
+	end
+	return string.format("$%d/s", math.floor(value + 0.5))
+end
+local function getSizeName(scale)
+	scale = tonumber(scale) or 1
+	if scale >= 100 then return "Titanic" elseif scale >= 30 then return "Large" elseif scale >= 10 then return "Medium" end
+	return "Small"
+end
+
+-- table keyed by a unique egg key, or nil when the snapshot could not be read
+local function getEggs()
+	if not loadEnv() then warnOnce("env", "game data modules not found"); return nil end
+	local remote = findRemote()
+	if not remote then warnOnce("noremote", "egg remote not found: " .. EGG_REMOTE); return nil end
+
+	-- own thread + timeout, so a stuck server reply can never freeze the script
+	local ok, result, done = false, nil, false
+	task.spawn(function()
+		ok, result = pcall(function() return remote:InvokeServer() end)
+		done = true
+	end)
+	local t0 = tick()
+	while not done and tick() - t0 < 8 do task.wait(0.1) end
+	if not done then warnOnce("slow", "egg snapshot did not answer in 8 seconds"); return nil end
+	if not ok or type(result) ~= "table" or type(result.Records) ~= "table" then
+		warnOnce("snap", "could not read egg snapshot: " .. tostring(result))
+		return nil
+	end
+
+	local out = {}
+	local playerCount, maxPlayers = #Players:GetPlayers(), Players.MaxPlayers
+	local directory = env.Assets.Directory
+	for _, record in pairs(result.Records) do
+		if record.State == "Slot" or record.State == "Dropped" then
+			local entry = directory and directory[tostring(record.AssetCategory)]
+			if entry then
+				local icon = ""
+				if entry.Icon and tostring(entry.Icon) ~= "" then
+					icon = tonumber(entry.Icon) and ("rbxassetid://" .. entry.Icon) or tostring(entry.Icon)
+				end
+				local mutation = 1
+				if env.Mutations and type(env.Mutations.EarningsFor) == "function" then
+					local okM, resM = pcall(env.Mutations.EarningsFor, type(record.Mutations) == "table" and record.Mutations or {})
+					if okM and type(resM) == "number" then mutation = resM end
+				end
+				local scale = tonumber(record.AssetScale) or 1
+				local value = (tonumber(entry.EarningRate) or 0) * getScaleMultiplier(scale) * mutation
+				local key = tostring(record.Uid or "") .. "|" .. tostring(record.AssetCategory) .. "|" .. tostring(record.AssetScale)
+				out[key] = {
+					uid = key,
+					name = tostring(entry.DisplayName or record.AssetCategory),
+					serverId = game.JobId,
+					rarity = entry.Rarity and tostring(entry.Rarity.DisplayName or entry.Rarity.Name) or "Unknown",
+					sizeName = getSizeName(scale),
+					scale = scale,
+					value = formatMoney(value),
+					valueNum = value,
+					image = icon,
+					players = playerCount,
+					maxPlayers = maxPlayers,
+				}
+			end
+		end
+	end
+	return out
+end
+
+-- ===== sending =====
+-- straight to the CAT HUB API (up to 50 eggs per request): shows in Live Egg right away
+local function pushApi(list)
+	if #list == 0 then return true end
+	if type(requestFunc) ~= "function" then warnOnce("nohttp", "executor has no http request function"); return false end
+	local headers = { ["Content-Type"] = "application/json" }
+	if REPORT_KEY ~= "" then headers["x-report-key"] = REPORT_KEY end
+	for i = 1, #list, 50 do
+		local chunk = {}
+		for j = i, math.min(i + 49, #list) do table.insert(chunk, list[j]) end
+		local ok, res = pcall(requestFunc, { Url = API_BASE .. "/report-egg", Method = "POST", Headers = headers, Body = HttpService:JSONEncode(chunk) })
+		local code = ok and type(res) == "table" and tonumber(res.StatusCode or res.Status) or nil
+		if not code or code < 200 or code >= 300 then
+			warnOnce("api", "API report failed (" .. tostring(code or "no response") .. "). Is /report-egg on the API?")
+			return false
+		end
+	end
+	return true
+end
+
+local function pushWebhook(egg)
+	if WEBHOOK_URL == "" or type(requestFunc) ~= "function" then return end
+	local joinLink = string.format("https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s", tostring(game.PlaceId), tostring(egg.serverId or ""))
+	pcall(requestFunc, {
+		Url = WEBHOOK_URL,
+		Method = "POST",
+		Headers = { ["Content-Type"] = "application/json" },
+		Body = HttpService:JSONEncode({
+			embeds = {{
+				title = tostring(egg.name or "Unknown Egg"),
+				description = string.format("**Rarity:** %s\n**KG/Size:** %s (%.1f)\n**Money:** %s\n**Players:** %s/%s",
+					tostring(egg.rarity or "Unknown"), tostring(egg.sizeName or "Small"), tonumber(egg.scale) or 1,
+					tostring(egg.value or "$0/s"), tostring(egg.players or "?"), tostring(egg.maxPlayers or "?")),
+				url = joinLink,
+				color = 16766720,
+				fields = {{ name = "🔗 JOIN SERVER", value = joinLink, inline = false }},
+				footer = { text = "CAT HUB • Server Hop" },
+			}},
+		}),
+	})
+end
+
+-- ===== server hop =====
+local function isFull(server)
+	local playing, maxP = tonumber(server.playing), tonumber(server.max)
+	return playing and maxP and maxP > 0 and playing >= maxP
+end
+-- Unvisited = not this server, not visited/tried before, and not full
+local function isUnvisited(server)
+	local id = tostring(server.id or "")
+	return id ~= "" and id ~= game.JobId and not visited[id] and not isFull(server)
+end
+
+local function fetchPage(cursor)
+	for attempt = 1, 3 do
+		local ok, result = pcall(function()
+			local url = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?sortOrder=Asc&limit=100"
+			if cursor and cursor ~= "" then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
+			return HttpService:JSONDecode(game:HttpGet(url))
+		end)
+		if ok and type(result) == "table" and type(result.data) == "table" then return result end
+		warn("[CAT HUB] Server list page failed (attempt " .. attempt .. "), retrying...")
+		task.wait(2 * attempt)
+	end
+	return nil
+end
+
+local function getServers()
+	local servers, seen = {}, {}
+	local usable = 0
+	local function add(id, playing, max)
+		id = id and tostring(id)
+		if not id or seen[id] then return end
+		seen[id] = true
+		local entry = { id = id, playing = playing, max = max }
+		table.insert(servers, entry)
+		if isUnvisited(entry) then usable += 1 end
+	end
+
+	if type(getservers) == "function" then
+		pcall(function()
+			local result = getservers()
+			if type(result) == "table" then
+				for _, s in ipairs(result) do
+					add(s.id or s.Id or s.jobId, s.playing or s.Playing, s.maxPlayers or s.max or s.MaxPlayers)
+				end
+			end
+		end)
+	end
+
+	-- stop early once enough unvisited servers are found; go through every page when they run out
+	if #servers == 0 then
+		local cursor = nil
+		for _ = 1, MAX_SERVER_PAGES do
+			local result = fetchPage(cursor)
+			if not result then break end
+			for _, s in ipairs(result.data) do add(s.id, s.playing, s.maxPlayers) end
+			cursor = result.nextPageCursor
+			if usable >= MIN_CANDIDATES or not cursor or cursor == "" then break end
+		end
+	end
+
+	-- most free slots first (less likely to be full when we arrive)
+	table.sort(servers, function(a, b)
+		local aMax, bMax = tonumber(a.max) or 0, tonumber(b.max) or 0
+		local aFree = aMax > 0 and (aMax - (tonumber(a.playing) or 0)) or -1
+		local bFree = bMax > 0 and (bMax - (tonumber(b.playing) or 0)) or -1
+		return aFree > bFree
+	end)
+	return servers
+end
+
+-- a failed teleport (server full, etc.) is caught so the next server is tried instantly
+local teleportFailed = false
+pcall(function()
+	TeleportService.TeleportInitFailed:Connect(function(player, result, message)
+		if player == Players.LocalPlayer then
+			teleportFailed = true
+			warn("[CAT HUB] Teleport failed:", tostring(result), tostring(message))
+		end
+	end)
+end)
+
+local function pickCandidates(servers)
+	local list = {}
+	for _, s in ipairs(servers) do
+		if isUnvisited(s) then table.insert(list, s) end
+	end
+	return list
+end
+
+-- returns true if a teleport started, false if nothing could be joined
+local function hopServer()
+	markVisited(game.JobId)
+	local servers = getServers()
+	local candidates = pickCandidates(servers)
+
+	if #candidates == 0 then
+		if not CLEAR_VISITED_WHEN_EXHAUSTED then
+			warn("[CAT HUB] No unvisited, non-full servers left.")
+			return false
+		end
+		-- every discoverable server was visited: start a fresh cycle
+		warn("[CAT HUB] Visited every discoverable server. Starting a new cycle.")
+		for k in pairs(visited) do visited[k] = nil end
+		if writefile then pcall(writefile, VISITED_FILE, "") end
+		markVisited(game.JobId)
+		candidates = pickCandidates(servers)
+		if #candidates == 0 then return false end
+	end
+
+	for _, server in ipairs(candidates) do
+		local id = tostring(server.id)
+		print("[CAT HUB] Trying server:", id, "players:", tostring(server.playing), "max:", tostring(server.max))
+		teleportFailed = false
+		markVisited(id)
+		queueSelf() -- carries the script + visited list into the next server
+
+		local ok, err = pcall(function()
+			TeleportService:TeleportToPlaceInstance(game.PlaceId, id, Players.LocalPlayer)
+		end)
+		if ok then
+			local t = tick()
+			while tick() - t < TELEPORT_TIMEOUT and not teleportFailed do task.wait(0.25) end
+			if not teleportFailed then return true end
+			-- failed (full / unavailable): go straight to the next server
+		else
+			warn("[CAT HUB] Could not start teleport to " .. id .. ": " .. tostring(err))
+		end
+	end
+	warn("[CAT HUB] All fetched candidates failed. Fetching a new list...")
+	return false
+end
+
+-- ===== main: scan completely -> send to Live Egg -> hop =====
+task.spawn(function()
+	task.wait(3) -- let the field finish loading
+
+	local seen, sent, hooked, latest = {}, {}, {}, {}
+	-- returns how many NEW eggs showed up, or nil if the snapshot was unreadable
+	local function scanOnce()
+		local eggs = getEggs()
+		if not eggs then return nil end
+		latest = eggs
+		local added, batch, ids = 0, {}, {}
+		for key, egg in pairs(eggs) do
+			if not seen[key] then seen[key] = true; added += 1 end
+			if not sent[key] then table.insert(batch, egg); table.insert(ids, key) end
+		end
+		if #batch > 0 and pushApi(batch) then
+			for _, k in ipairs(ids) do sent[k] = true end
+		end
+		for key, egg in pairs(eggs) do
+			if WEBHOOK_URL ~= "" and not hooked[key] and (tonumber(egg.valueNum) or 0) >= WEBHOOK_MIN_VALUE then
+				hooked[key] = true
+				pushWebhook(egg)
+				task.wait(0.45)
+			end
+		end
+		return added
+	end
+
+	-- keep scanning until no new egg shows up for several scans in a row
+	local startTime, stable = tick(), 0
+	while true do
+		local added = scanOnce()
+		stable = ((added or 0) == 0) and (stable + 1) or 0
+		local elapsed = tick() - startTime
+		if elapsed >= MAX_SCAN_TIME or (elapsed >= MIN_SCAN_TIME and stable >= STABLE_SCANS) then break end
+		task.wait(SCAN_STEP)
+	end
+
+	-- make sure every egg reached Live Egg before leaving (the API may need a moment to wake up)
+	for _ = 1, 3 do
+		local batch, ids = {}, {}
+		for key, egg in pairs(latest) do
+			if not sent[key] then table.insert(batch, egg); table.insert(ids, key) end
+		end
+		if #batch == 0 then break end
+		if pushApi(batch) then
+			for _, k in ipairs(ids) do sent[k] = true end
+			break
+		end
+		task.wait(3)
+	end
+
+	local count = 0
+	for _ in pairs(latest) do count += 1 end
+	print("[CAT HUB] Scan complete. Eggs found:", count, "- hopping now.")
+	task.wait(1)
+
+	-- non-stop hopping: never stops on full servers, never repeats a visited server until all were visited
+	while true do
+		local started = hopServer()
+		task.wait(started and HOP_RETRY_DELAY or 3)
+		if not AUTO_LOOP then break end
+	end
+end)
+
+]=====]
+local g = (getgenv and getgenv()) or _G
+g.__CatHubHopSource = SRC
+loadstring(SRC)()
